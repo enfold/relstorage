@@ -956,8 +956,53 @@ class ObjectMover(object):
         cursor.execute(stmt)
         return [oid for (oid,) in fetchmany(cursor)]
 
+    @metricmethod_sampled
+    def mysql_move_from_temp(self, cursor, tid, txn_has_blobs):
+        """Moved the temporarily stored objects to permanent storage.
+
+        Returns the list of oids stored.
+        """
+        if self.keep_history:
+            stmt = """
+            INSERT INTO object_state
+                (zoid, tid, prev_tid, md5, state_size, state)
+            SELECT zoid, %s, prev_tid, md5,
+                COALESCE(LENGTH(state), 0), state
+            FROM temp_store
+            """
+            cursor.execute(stmt, (tid,))
+
+        else:
+            stmt = """
+            REPLACE INTO object_state (zoid, tid, state_size, state)
+            SELECT zoid, %s, COALESCE(LENGTH(state), 0), state
+            FROM temp_store
+            """
+            cursor.execute(stmt, (tid,))
+
+            if txn_has_blobs:
+                stmt = """
+                DELETE bc FROM blob_chunk bc
+                INNER JOIN (SELECT zoid FROM temp_store) sq
+                ON bc.zoid = sq.zoid
+                """
+                cursor.execute(stmt)
+
+        if txn_has_blobs:
+            stmt = """
+            INSERT INTO blob_chunk (zoid, tid, chunk_num, chunk)
+            SELECT zoid, %s, chunk_num, chunk
+            FROM temp_blob_chunk
+            """
+            cursor.execute(stmt, (tid,))
+
+        stmt = """
+        SELECT zoid FROM temp_store
+        """
+        cursor.execute(stmt)
+        return [oid for (oid,) in fetchmany(cursor)]
+
     postgresql_move_from_temp = generic_move_from_temp
-    mysql_move_from_temp = generic_move_from_temp
     oracle_move_from_temp = generic_move_from_temp
 
 
