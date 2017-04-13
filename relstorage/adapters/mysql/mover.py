@@ -16,6 +16,7 @@
 from __future__ import print_function
 
 from relstorage.adapters.interfaces import IObjectMover
+from relstorage.iter import fetchmany
 from zope.interface import implementer
 import os
 
@@ -217,3 +218,34 @@ class MySQLObjectMover(AbstractObjectMover):
                     params = (oid, chunk_num, chunk)
                 cursor.execute(insert_stmt, params)
                 chunk_num += 1
+
+    @metricmethod_sampled
+    def move_from_temp(self, cursor, tid, txn_has_blobs):
+        """Moved the temporarily stored objects to permanent storage.
+
+        Returns the list of oids stored.
+        """
+
+        if self.keep_history:
+            stmt = self._move_from_temp_hp_insert_query
+            cursor.execute(stmt, (tid,))
+        else:
+            self._move_from_temp_object_state(cursor, tid)
+
+            if txn_has_blobs:
+                stmt = """
+                DELETE bc FROM blob_chunk bc
+                INNER JOIN (SELECT zoid FROM temp_store) sq
+                ON bc.zoid = sq.zoid
+                """
+                cursor.execute(stmt)
+
+        if txn_has_blobs:
+            stmt = self._move_from_temp_copy_blob_query
+            cursor.execute(stmt, (tid,))
+
+        stmt = """
+        SELECT zoid FROM temp_store
+        """
+        cursor.execute(stmt)
+        return [oid for (oid,) in fetchmany(cursor)]
